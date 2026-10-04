@@ -39,6 +39,20 @@
           "command": "python <holohub_app_source>/examples/xray_simulator_demo.py",
           "workdir": "holohub_app_source"
         }
+      },
+      "preprocess": {
+        "description": "Configure HU-to-attenuation mapping and cache a volume; pass options with --run-args",
+        "run": {
+          "command": "python -m xray_simulator preprocess",
+          "workdir": "holohub_app_source"
+        }
+      },
+      "render": {
+        "description": "Configure display, sensor approximations, geometry and frame output; pass options with --run-args",
+        "run": {
+          "command": "python -m xray_simulator render",
+          "workdir": "holohub_app_source"
+        }
       }
     }
   }

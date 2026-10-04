@@ -98,6 +98,10 @@ pip install -e .[all]
 
 ## Quick Start
 
+For command-line controls, see [CLI configuration and RQ2 coverage](docs/cli.md).
+The `preprocess` and `render` commands expose display, HU mapping, intensity
+effects and geometry without editing Python examples.
+
 ```python
 from xray_simulator import VolumePreprocessor, xray_simulator, SimulatorConfig, PreprocessedVolume
 
