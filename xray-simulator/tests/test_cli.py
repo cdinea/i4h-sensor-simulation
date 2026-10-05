@@ -13,15 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CLI behavior with real preprocessing/display/effects and a CPU transport fixture."""
+"""Config-file launcher uses the same validated settings as the Python API."""
 
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
+from PIL import Image
+from xray_simulator import HuToMuMapping, SimulatorConfig
 from xray_simulator.cli import main
 from xray_simulator.simulator import xray_simulator
 
@@ -31,8 +33,8 @@ def cpu_transport(monkeypatch):
     calls = []
 
     def initialize(simulator):
-        # Transport is the only replaced component. Configuration, preprocessing,
-        # seeded intensity effects, display mapping and export use production code.
+        # Replace GPU transport only; configuration, HU mapping, effects and export
+        # execute the production implementation.
         class Renderer:
             def render(self, rotation, translation):
                 calls.append((tuple(rotation), tuple(translation)))
@@ -45,228 +47,215 @@ def cpu_transport(monkeypatch):
     return calls
 
 
-def render(tmp_path, name, *options):
+def preset(tmp_path, name="preset", suffix=".json", update=None):
+    data = SimulatorConfig().with_output(format="npy").to_dict()
+    if update:
+        update(data)
+    path = tmp_path / (name + suffix)
+    path.write_text(json.dumps(data) if suffix == ".json" else yaml.safe_dump(data))
+    return path
+
+
+def render(tmp_path, name, update=None, *options, suffix=".json"):
+    path = preset(tmp_path, name, suffix, update)
     output = tmp_path / name
-    assert main(["render", "--synthetic", "--output", str(output), *options]) == 0
+    assert main(["render", "--config", str(path), "--synthetic", "--output", str(output), *options]) == 0
     return np.load(output / "frame_0000.npy"), json.loads((output / "run.json").read_text())
 
 
-def test_dryrun_never_loads_data_or_initializes_renderer(tmp_path, monkeypatch, capsys):
+def modify(section, **fields):
+    def update(data):
+        node = data
+        for key in section.split("."):
+            node = node[key]
+        node.update(fields)
+
+    return update
+
+
+@pytest.mark.parametrize("suffix", [".json", ".yaml", ".yml"])
+def test_dryrun_never_loads_data_or_initializes_renderer(tmp_path, monkeypatch, capsys, suffix):
     def forbidden(*args, **kwargs):
         pytest.fail("dryrun must not load voxels or touch the GPU")
 
     monkeypatch.setattr("xray_simulator.cli._load_volume", forbidden)
     monkeypatch.setattr(xray_simulator, "_init_renderer", forbidden)
+    path = preset(tmp_path, suffix=suffix, update=modify("post_processing.display", polarity="diagnostic", gamma=1.7))
     output = tmp_path / "preview"
-    assert (
-        main(
-            [
-                "render",
-                "--synthetic",
-                "--appearance",
-                "xray",
-                "--gamma",
-                "1.7",
-                "--gain",
-                "1.2",
-                "--poisson-photons",
-                "1000",
-                "--output",
-                str(output),
-                "--dryrun",
-            ]
-        )
-        == 0
-    )
-    config = json.loads(capsys.readouterr().out)["simulator"]
-    assert config["display"]["polarity"] == "diagnostic"
-    assert config["display"]["gamma"] == 1.7
-    assert config["realism"]["enabled"] is True
+    assert main(["render", "--config", str(path), "--synthetic", "--output", str(output), "--dryrun"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    expected = SimulatorConfig.from_preset(path).with_output(output_dir=str(output)).to_dict()
+    assert plan["preset"] == expected
     assert not output.exists()
 
 
-def test_piecewise_transfer_is_applied_and_saved(tmp_path):
+@pytest.mark.parametrize("suffix", [".json", ".yaml"])
+def test_piecewise_transfer_is_applied_and_saved(tmp_path, suffix):
     output = tmp_path / "cache"
-    args = ["preprocess", "--synthetic", "--output", str(output), "--no-hu-clip"]
-    for hu, mu in [(-1000, 0), (0, 0.01), (1000, 0.05)]:
-        args += ["--hu-control-point", str(hu), str(mu)]
-    assert main(args) == 0
-    mu = np.load(output / "mu_volume.npy")
-    np.testing.assert_allclose(np.unique(mu), [0.0, 0.0116, 0.046], atol=1e-7)
+    mapping = HuToMuMapping(control_points=((-1000, 0), (0, 0.01), (1000, 0.05)))
+    config = SimulatorConfig().with_preprocessing(clip_hu=False, hu_to_mu=mapping)
+    path = config.save_preset(tmp_path / ("preset" + suffix))
+    assert main(["preprocess", "--config", str(path), "--synthetic", "--output", str(output)]) == 0
+    np.testing.assert_allclose(np.unique(np.load(output / "mu_volume.npy")), [0, 0.0116, 0.046], atol=1e-7)
     metadata = json.loads((output / "metadata.json").read_text())
     assert metadata["hu_to_mu"]["control_points"] == [[-1000.0, 0.0], [0.0, 0.01], [1000.0, 0.05]]
     assert metadata["anatomical_frame"] == "LPS"
 
 
-def test_hu_ramp_and_clipping_change_preprocessed_values(tmp_path):
-    output = tmp_path / "clipped"
-    main(
-        [
-            "preprocess",
-            "--synthetic",
-            "--hu-window-center",
-            "100",
-            "--hu-window-width",
-            "200",
-            "--mu-min",
-            "0.001",
-            "--mu-max",
-            "0.021",
-            "--hu-clip",
-            "0",
-            "100",
-            "--output",
-            str(output),
-        ]
-    )
+def test_hu_window_and_clipping_reach_preprocessor(tmp_path):
+    def update(data):
+        data["preprocessing"] = {
+            "hu_clip_min": 0,
+            "hu_clip_max": 100,
+            "hu_to_mu": {"window_center": 100, "window_width": 200, "mu_min": 0.001, "mu_max": 0.021},
+        }
+
+    path = preset(tmp_path, update=update)
+    output = tmp_path / "cache"
+    main(["preprocess", "--config", str(path), "--synthetic", "--output", str(output)])
     np.testing.assert_allclose(np.unique(np.load(output / "mu_volume.npy")), [0.001, 0.005, 0.011], atol=1e-7)
 
 
-def test_polarity_gamma_and_explicit_preset_override(tmp_path, cpu_transport):
+def test_json_yaml_have_identical_rendered_results(tmp_path, cpu_transport):
+    changes = modify(
+        "post_processing.realism",
+        enabled=True,
+        gain=0.9,
+        bias=0.01,
+        poisson_photons=500,
+        gaussian_sigma=0.01,
+        blur_sigma_px=0.7,
+        seed=19,
+    )
+    first, _ = render(tmp_path, "json", changes)
+    second, _ = render(tmp_path, "yaml", changes, suffix=".yaml")
+    np.testing.assert_array_equal(first, second)
+
+
+def test_polarity_gamma_and_scaling(tmp_path, cpu_transport):
     fluoro, _ = render(tmp_path, "fluoro")
-    xray, _ = render(tmp_path, "xray", "--appearance", "xray")
+    xray, _ = render(tmp_path, "xray", modify("post_processing.display", polarity="diagnostic"))
     np.testing.assert_allclose(xray, 1 - fluoro, atol=1e-7)
-    gamma, _ = render(tmp_path, "gamma", "--gamma", "2")
+    gamma, _ = render(tmp_path, "gamma", modify("post_processing.display", gamma=2))
     np.testing.assert_allclose(gamma, np.sqrt(fluoro), atol=1e-7)
-    overridden, config = render(tmp_path, "override", "--appearance", "xray", "--polarity", "fluoro")
-    np.testing.assert_array_equal(overridden, fluoro)
-    assert config["simulator"]["display"]["polarity"] == "fluoro"
-
-
-def test_scaling_windows_and_i0(tmp_path, cpu_transport):
-    transmission, _ = render(tmp_path, "transmission", "--scaling", "transmission")
-    doubled_i0, _ = render(tmp_path, "i0", "--scaling", "transmission", "--i0", "2")
-    np.testing.assert_array_equal(transmission, doubled_i0)
-    window, config = render(tmp_path, "window", "--window", ".4", ".9")
+    transmission, _ = render(tmp_path, "transmission", modify("post_processing.display", scaling="transmission"))
+    window, _ = render(tmp_path, "window", modify("post_processing.display", scaling="window", window=[0.4, 0.9]))
     np.testing.assert_allclose(window, np.clip((transmission - 0.4) / 0.5, 0, 1), atol=1e-7)
-    assert config["simulator"]["display"]["scaling"] == "window"
-    normalized, _ = render(tmp_path, "norm", "--scaling", "per_frame")
-    assert normalized.min() == pytest.approx(0)
-    assert normalized.max() == pytest.approx(1)
-    default_log, _ = render(tmp_path, "log")
-    narrow, _ = render(tmp_path, "narrow", "--log-window", "0", "2")
-    assert np.mean(narrow) < np.mean(default_log)
 
 
 def test_hu_settings_reach_rendering(tmp_path, cpu_transport):
     baseline, _ = render(tmp_path, "base")
-    stronger, _ = render(tmp_path, "stronger", "--mu-max", ".04")
+    stronger, _ = render(tmp_path, "stronger", modify("preprocessing.hu_to_mu", mu_max=0.04))
     assert np.mean(stronger) < np.mean(baseline)
 
 
-def test_gain_bias_and_raw_intensity_output(tmp_path, cpu_transport):
-    display, plan = render(
-        tmp_path,
-        "effects",
-        "--gain",
-        "0",
-        "--bias",
-        ".25",
-        "--i0",
-        "2",
-        "--scaling",
-        "transmission",
-        "--keep-intensity",
-    )
+def test_gain_bias_i0_and_intensity_export(tmp_path, cpu_transport):
+    def update(data):
+        data["beam"]["i0"] = 2
+        data["post_processing"]["display"]["scaling"] = "transmission"
+        data["post_processing"]["realism"].update(enabled=True, gain=0, bias=0.25)
+        data["output"]["keep_intensity"] = True
+
+    display, plan = render(tmp_path, "effects", update)
     np.testing.assert_allclose(display, 0.125)
     np.testing.assert_allclose(np.load(tmp_path / "effects/intensity_0000.npy"), 0.25)
-    assert plan["simulator"]["realism"]["enabled"] is True
+    assert plan["preset"]["post_processing"]["realism"]["enabled"] is True
 
 
 def test_seeded_cine_repeats_run_but_not_each_frame(tmp_path, cpu_transport):
-    options = [
-        "--frames",
-        "3",
-        "--seed",
-        "17",
-        "--poisson-photons",
-        "500",
-        "--gaussian-sigma",
-        ".01",
-        "--keep-intensity",
-    ]
-    render(tmp_path, "first", *options)
-    render(tmp_path, "second", *options)
+    def update(data):
+        data["post_processing"]["realism"].update(enabled=True, seed=17, poisson_photons=500, gaussian_sigma=0.01)
+        data["output"]["keep_intensity"] = True
+
+    render(tmp_path, "first", update, "--frames", "3")
+    render(tmp_path, "second", update, "--frames", "3")
     first = [np.load(tmp_path / "first" / f"intensity_{i:04d}.npy") for i in range(3)]
     for i in range(3):
         np.testing.assert_array_equal(first[i], np.load(tmp_path / "second" / f"intensity_{i:04d}.npy"))
     assert not np.array_equal(first[0], first[1])
 
 
-def test_blur_reduces_edge_energy(tmp_path, cpu_transport):
-    sharp, _ = render(tmp_path, "sharp", "--scaling", "transmission")
-    blurred, _ = render(tmp_path, "blur", "--scaling", "transmission", "--blur-sigma-px", "2")
-    def energy(x):
-        return np.sum(np.diff(x, axis=0) ** 2) + np.sum(np.diff(x, axis=1) ** 2)
-
-    assert energy(blurred) < energy(sharp)
-
-
 def test_calibration_is_frozen_and_recorded(tmp_path, cpu_transport):
-    _, plan = render(tmp_path, "calibrated", "--calibrate-display", "1", "99", "--frames", "3")
-    assert len(cpu_transport) == 4  # One calibration render, followed by three frames.
-    assert plan["simulator"]["display"]["log_window"] != [0.0, 6.0]
-    a = np.load(tmp_path / "calibrated/frame_0000.npy")
-    np.testing.assert_array_equal(a, np.load(tmp_path / "calibrated/frame_0002.npy"))
+    _, plan = render(tmp_path, "calibrated", None, "--calibrate-display", "1", "99", "--frames", "3")
+    assert len(cpu_transport) == 4
+    assert plan["preset"]["post_processing"]["display"]["log_window"] != [0.0, 6.0]
+    np.testing.assert_array_equal(
+        np.load(tmp_path / "calibrated/frame_0000.npy"), np.load(tmp_path / "calibrated/frame_0002.npy")
+    )
+    SimulatorConfig.from_dict(plan["preset"])
 
 
-def test_cache_render_and_hu_rejection(tmp_path, cpu_transport):
+def test_cached_volume_retains_mapping(tmp_path, cpu_transport):
+    path = preset(tmp_path)
     cache = tmp_path / "cache"
-    main(["preprocess", "--synthetic", "--output", str(cache)])
-    main(["render", "--cache", str(cache), "--view", "ap", "--output", str(tmp_path / "valid")])
+    main(["preprocess", "--config", str(path), "--synthetic", "--output", str(cache)])
+    main(["render", "--config", str(path), "--cache", str(cache), "--view", "ap", "--output", str(tmp_path / "valid")])
+    path = preset(tmp_path, "custom", update=modify("preprocessing.hu_to_mu", mu_max=0.05))
     with pytest.raises(SystemExit) as exc:
-        main(["render", "--cache", str(cache), "--mu-max", ".05", "--output", str(tmp_path / "bad")])
+        main(["render", "--config", str(path), "--cache", str(cache), "--output", str(tmp_path / "bad")])
     assert exc.value.code == 2
     assert not (tmp_path / "bad").exists()
+
+
+@pytest.mark.parametrize("fmt", ["npy", "npz", "png"])
+def test_preset_output_directory_format_and_single_writer(tmp_path, cpu_transport, fmt):
+    output = tmp_path / "frames"
+    path = preset(tmp_path, update=modify("output", output_dir=str(output), format=fmt, save_to_disk=True))
+    main(["render", "--config", str(path), "--synthetic"])
+    assert sorted(p.name for p in output.iterdir()) == [f"frame_0000.{fmt}", "run.json"]
+    if fmt == "npy":
+        image = np.load(output / "frame_0000.npy")
+    elif fmt == "npz":
+        with np.load(output / "frame_0000.npz") as archive:
+            image = archive["image"]
+    else:
+        with Image.open(output / "frame_0000.png") as png:
+            assert png.mode == "L"
+            image = np.array(png)
+    assert image.shape == (64, 64)
 
 
 @pytest.mark.parametrize(
     "options",
     [
-        ["--gamma", "nan"],
-        ["--gamma", "0"],
-        ["--i0", "inf"],
-        ["--gaussian-sigma", "-1"],
-        ["--detector-size", "0", "128"],
-        ["--sdd-mm", "400", "--sid-mm", "500"],
-        ["--window", ".8", ".2"],
-        ["--window", "0", "2"],
-        ["--hu-clip", "50", "20"],
-        ["--log-window", "1", "1"],
-        ["--scaling", "transmission", "--window", "0", "1"],
+        ["--gamma", "1.2"],
+        ["--gain", "2"],
+        ["--hu-clip", "0", "100"],
+        ["--frames", "0"],
+        ["--fps", "nan"],
         ["--calibrate-display", "90", "10"],
-        ["--seed", "-1"],
-        ["--hu-control-point", "0", "0"],
-        ["--hu-control-point", "0", "0", "--hu-control-point", "-1", ".01"],
-        ["--hu-control-point", "0", "0", "--hu-control-point", "1000", ".01", "--mu-max", ".02"],
-        ["--scatter", ".2"],
-        ["--dose-mgy", "1"],
-        ["--persistence", ".5"],
     ],
 )
-def test_invalid_controls_fail_before_rendering(tmp_path, monkeypatch, options):
+def test_invalid_options_fail_before_rendering(tmp_path, monkeypatch, options):
     monkeypatch.setattr(xray_simulator, "_init_renderer", lambda *a: pytest.fail("GPU must not be initialized"))
+    path = preset(tmp_path)
     output = tmp_path / "invalid"
     with pytest.raises(SystemExit) as exc:
-        main(["render", "--synthetic", "--output", str(output), *options])
+        main(["render", "--config", str(path), "--synthetic", "--output", str(output), *options])
     assert exc.value.code == 2
     assert not output.exists()
 
 
+def test_invalid_preset_fails_before_loading_volume(tmp_path, monkeypatch):
+    monkeypatch.setattr("xray_simulator.cli._load_volume", lambda *a: pytest.fail("must validate first"))
+    path = preset(tmp_path, update=modify("beam", i0=-1))
+    with pytest.raises(SystemExit) as exc:
+        main(["render", "--config", str(path), "--synthetic", "--output", str(tmp_path / "out")])
+    assert exc.value.code == 2
+
+
 def test_existing_outputs_are_preserved(tmp_path):
+    path = preset(tmp_path)
     sentinel = tmp_path / "existing.txt"
     sentinel.write_text("keep")
     with pytest.raises(SystemExit):
-        main(["preprocess", "--synthetic", "--output", str(tmp_path)])
+        main(["preprocess", "--config", str(path), "--synthetic", "--output", str(tmp_path)])
     assert sentinel.read_text() == "keep"
 
 
-def test_module_help_and_i4h_modes():
+def test_module_help_lists_config_file():
     result = subprocess.run(
         [sys.executable, "-m", "xray_simulator", "render", "--help"], capture_output=True, text=True
     )
     assert result.returncode == 0
-    assert "--polarity" in result.stdout and "--hu-control-point" in result.stdout
-    metadata = json.loads((Path(__file__).parents[1] / "metadata.json").read_text())
-    for command in ("render", "preprocess"):
-        assert metadata["application"]["modes"][command]["run"]["command"] == f"python -m xray_simulator {command}"
+    assert "--config" in result.stdout and "--gain" not in result.stdout

@@ -24,34 +24,31 @@ The `xray_simulator` package generates realistic simulated X-ray images from CT 
 2. [Quick Start](#quick-start)
 3. [Architecture, API & Configuration](docs/architecture-and-api.md) — rendering pipeline, physics, API reference, C-arm configuration
 4. [Examples & Test Data](docs/examples-and-test-data.md) — test datasets, example scripts, running the examples
+5. [Preset Schema & API](docs/preset-schema.md) — versioned JSON/YAML configuration, validation, field reference
 
 ---
 
 ## Installation
 
-### Option 1: Using the I4H CLI (Recommended)
+### Option 1: Python API and configuration files
 
-The `./i4h` CLI builds and runs inside a Docker container with all dependencies pre-installed.
-Each step is a separate mode; the cached preprocessed volume persists between runs in `xray-simulator/output/`.
+Install the package from the repository root:
 
 ```bash
-# Synthetic data workflow (no real CT data needed)
-./i4h run xray-simulator preprocess_synthetic
-./i4h run xray-simulator demo
-
-# Real CT data workflow
-./i4h run xray-simulator download_data
-./i4h run xray-simulator preprocess_dicom
-./i4h run xray-simulator demo
-
-# List available modes
-./i4h modes xray-simulator
-
-# Launch an interactive shell inside the container
-./i4h run-container xray-simulator
+python -m pip install -e './xray-simulator[cli,slang]'
 ```
 
-Set `xray_simulator_OUTPUT_DIR` or `xray_simulator_CACHE_DIR` to override the default output paths.
+Scanner parameters are exposed through `SimulatorConfig` and versioned JSON/YAML
+presets. A small launcher selects the input and runs the configured pipeline:
+
+```bash
+python -m xray_simulator render \
+  --config xray-simulator/examples/presets/fluoroscopy.yaml \
+  --synthetic --view ap --output output/fluoroscopy --dryrun
+```
+
+Remove `--dryrun` to render with CUDA/Slang. The
+[configuration launcher guide](docs/cli.md) covers direct Python and Docker usage.
 
 ### Option 2: Docker
 
@@ -98,7 +95,7 @@ pip install -e .[all]
 
 ## Quick Start
 
-For command-line controls, see [CLI configuration and RQ2 coverage](docs/cli.md).
+For file-based configuration, see the [JSON/YAML launcher guide](docs/cli.md).
 The `preprocess` and `render` commands expose display, HU mapping, intensity
 effects and geometry without editing Python examples.
 
@@ -265,7 +262,30 @@ frames_array = cine.to_numpy()  # Shape: (N, H, W)
 
 ---
 
+## Configuration Presets
+
+Load and save a complete X-ray/fluoroscopy configuration as a versioned JSON or YAML preset.
+Run this example from `xray-simulator/`; loading and validating presets needs only the
+base package, without a GPU or Slang installation.
+
+```python
+from xray_simulator import SimulatorConfig
+
+config = SimulatorConfig.from_preset("examples/presets/fluoroscopy.yaml")
+config = config.with_geometry(detector_width_px=256, detector_height_px=256)
+config.save_preset("custom-preset.json")
+
+# Pass the loaded configuration to the existing rendering API:
+# simulator = xray_simulator(volume, config=config)
+```
+
+The [preset reference](docs/preset-schema.md) documents the modality, beam, geometry,
+detector, post-processing, and optional runtime settings, including units and defaults.
+Example files cover [fluoroscopy](examples/presets/fluoroscopy.json) and
+[radiograph appearance](examples/presets/radiograph.json).
+
 ## Further Reading
 
 - **[Architecture, API & Configuration](docs/architecture-and-api.md)** — Physics model, differentiable rendering, full API reference, and C-arm geometry configuration.
+- **[Preset Schema & API](docs/preset-schema.md)** — Portable JSON/YAML presets, validation, defaults, and field reference.
 - **[Examples & Test Data](docs/examples-and-test-data.md)** — Recommended datasets (e.g. Kaggle), command-line examples, single-frame/cine/streaming code, and step-by-step instructions for `preprocess_ct.py` and `xray_simulator_demo.py`.

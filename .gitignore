@@ -184,7 +184,7 @@ plans/*
 # vim
 .swp
 
-# HoloHub CLI (downloaded on first ./i4h run)
+# Local tooling caches retained from older checkouts
 tools/
 .tmp-holohub-*
 .nv/

@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # Global: must be declared before the first FROM so `FROM cuda${CUDA_MAJOR}` works.
-# ./i4h passes CUDA_MAJOR=12 or 13 from the host driver.
+# Select CUDA_MAJOR=12 or 13 with docker build --build-arg for the host driver.
 ARG CUDA_MAJOR=12
 
 # ============================================================================
@@ -46,8 +46,7 @@ RUN echo "Yes" | /downloads/.venv/bin/i4h-asset-retrieve \
 # Stage 2: Runtime image
 # ============================================================================
 # CUDA 12.6 cannot compile Blackwell (sm_120/sm_121), so pick a matching CUDA
-# devel image. BASE_IMAGE from the HoloHub CLI is the Holoscan SDK tag and is
-# intentionally unused: this simulator needs nvcc, not Holoscan.
+# devel image with nvcc for the target GPU.
 FROM nvidia/cuda:12.6.3-devel-ubuntu24.04 AS cuda12
 FROM nvidia/cuda:13.0.2-devel-ubuntu24.04 AS cuda13
 FROM cuda${CUDA_MAJOR}
@@ -98,6 +97,8 @@ RUN CUDA_ARCH="$(printf '%s' "${COMPUTE_CAPACITY}" | tr -d '.')" \
        pip install ".[all]"
 
 # Mesh assets baked into the image at /opt/ultrasound-mesh.
-# i4h modes point ULTRASOUND_MESH_DIR to this path by default.
 COPY --from=mesh-downloader /downloads/assets/*/Props/ABDPhantom/Organs /opt/ultrasound-mesh
-ENV HOLOHUB_ALWAYS_BUILD=false
+COPY ultrasound-simulator/examples ./examples
+ENV ULTRASOUND_MESH_DIR=/opt/ultrasound-mesh
+
+CMD ["python", "examples/server.py"]

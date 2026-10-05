@@ -20,50 +20,31 @@ The simulator implements the straight-ray approach of [Bürger et al. (2013), IE
 
 ## Quick start
 
-### Option 1: Using the I4H CLI (Recommended)
+### Option 1: Using build_and_run.sh
 
-The `./i4h` CLI builds and runs inside a Docker container with all dependencies pre-installed.
-
-```bash
-# Launch the interactive web server (default mode)
-./i4h run ultrasound-simulator
-
-# Run the sphere-sweep demo (no mesh download needed)
-./i4h run ultrasound-simulator sphere_sweep
-
-# Run the liver-sweep demo
-./i4h run ultrasound-simulator liver_sweep
-
-# Run the performance benchmark
-./i4h run ultrasound-simulator benchmark
-
-# List available modes
-./i4h modes ultrasound-simulator
-
-# Launch an interactive shell inside the container
-./i4h run-container ultrasound-simulator
-```
-
-Open your browser to <http://0.0.0.0:8000> when running the `server` mode.
-
-> **Note:** With `./i4h`, mesh-backed modes (`server`, `liver_sweep`, `benchmark`) use the default
-> container mesh path (`/opt/ultrasound-mesh`) automatically.
-> `sphere_sweep` does not use mesh assets.
-
-![Ultrasound Probe Simulation](docs/probe-simulator.jpg)
-
-### Option 2: Using build_and_run.sh
+Build and launch the simulator directly from its directory:
 
 ```bash
 cd ultrasound-simulator
 ./build_and_run.sh examples/server.py
+
+# Other examples (the sphere sweep needs no mesh assets):
+./build_and_run.sh examples/sphere_sweep.py
+./build_and_run.sh examples/liver_sweep.py
+./build_and_run.sh examples/benchmark.py
 ```
 
-### Option 3: Docker
+The script selects the CUDA version and GPU architecture from the host, builds
+an image containing the package and mesh assets, and launches the requested
+example. Open `http://localhost:8000` for the web server.
+
+![Ultrasound Probe Simulation](docs/probe-simulator.jpg)
+
+### Option 2: Docker
 
 Instructions to build and run the examples in a docker environment can be found in the [`docs/docker_build`](docs/docker_build.md).
 
-### Option 4: Bare-Metal Installation
+### Option 3: Bare-Metal Installation
 
 Instructions to build and run the examples on a bare-metal installation can be found in the [`docs/baremetal_build`](docs/baremetal_build.md).
 

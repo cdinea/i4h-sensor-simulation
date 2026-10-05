@@ -48,4 +48,7 @@ RUN mkdir -p xray_simulator && touch xray_simulator/__init__.py \
     && pip install kaggle -e ".[all]" \
     && rm xray_simulator/__init__.py
 
-ENV HOLOHUB_ALWAYS_BUILD=false
+COPY xray-simulator/xray_simulator ./xray_simulator
+COPY xray-simulator/examples ./examples
+
+CMD ["python", "-m", "xray_simulator", "--help"]
