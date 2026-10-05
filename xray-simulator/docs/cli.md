@@ -146,4 +146,3 @@ docker run --rm --gpus all -v "$PWD/output:/output" xray_simulator \
 Mount a custom preset read-only when needed, for example
 `-v "$PWD/custom.yaml:/config/scanner.yaml:ro"`, and pass
 `--config /config/scanner.yaml`. Inputs must also use container-visible paths.
-Direct Docker and Python commands replace the removed shared `./i4h` wrapper.

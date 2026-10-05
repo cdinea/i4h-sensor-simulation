@@ -184,9 +184,8 @@ plans/*
 # vim
 .swp
 
-# Local tooling caches retained from older checkouts
+# Local tooling caches
 tools/
-.tmp-holohub-*
 .nv/
 .bash_history
 

@@ -169,9 +169,10 @@ mapping follows realism. When disabled, all realism operations are skipped.
 | `blur_sigma_px` | Number ≥ 0 | `0.0` | Gaussian blur standard deviation in pixels; zero disables it. |
 | `seed` | Integer ≥ 0 or `null` | `0` | Random seed, or fresh randomness when null. |
 
-The existing realism implementation creates a random generator for each frame.
-A fixed seed therefore repeats the random sequence for each invocation, rather
-than advancing one generator across a cine sequence. Presets preserve that behavior.
+The realism implementation creates a random generator for each frame. Repeated
+`render_frame()` calls with the same seed repeat the noise realization.
+`render_cine()` and the launcher advance the seed per frame, so a fixed seed
+reproduces the complete sequence while giving its frames independent draws.
 
 ### Post-processing: display
 
